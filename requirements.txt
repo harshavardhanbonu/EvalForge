@@ -5,4 +5,5 @@ psycopg[binary]
 psycopg2-binary
 google-genai
 pydantic
+pydantic-settings
 python-multipart
