@@ -1,36 +1,33 @@
-import os
-import math
-import google.generativeai as genai
-from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+from typing import List
+from app.core.config import settings
 
-load_dotenv()
+# Configure the new Gemini Client
+client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
-# Configure the Gemini SDK with your API key
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
-
-def generate_embedding(text: str) -> list[float]:
+def generate_embeddings(chunks: List[str]) -> List[List[float]]:
     """
-    Sends a text chunk to Google's Gemini embedding model.
-    Truncates the 3072D vector down to 768D to match our database.
+    Takes a list of text chunks and returns a list of 768-dimensional embeddings.
+    Leverages Matryoshka Representation Learning (MRL) to truncate vectors.
     """
+    if not chunks:
+        return []
+
     try:
-        response = genai.embed_content(
-            model="models/gemini-embedding-001",  # <-- The new active model
-            content=text,
-            task_type="retrieval_document"
+        # Using the active 'gemini-embedding-001' model instead of the deprecated one
+        result = client.models.embed_content(
+            model="gemini-embedding-001",
+            contents=chunks,
+            config=types.EmbedContentConfig(
+                task_type="RETRIEVAL_DOCUMENT",
+                output_dimensionality=768  # <-- THE MATRYOSHKA MAGIC
+            )
         )
         
-        # 1. Get the raw array and slice off the first 768 numbers
-        raw_embedding = response['embedding']
-        truncated = raw_embedding[:768]
+        # The new SDK returns an object where .embeddings is a list of embeddings, 
+        # and .values contains the actual floats.
+        return [embedding.values for embedding in result.embeddings]
         
-        # 2. Normalize the vector using standard math so cosine similarity still works
-        magnitude = math.sqrt(sum(x * x for x in truncated))
-        normalized_vector = [x / magnitude for x in truncated]
-        
-        return normalized_vector
-
     except Exception as e:
-        print(f"❌ Gemini Embedding Error: {e}")
-        raise e
+        raise ValueError(f"Failed to generate embeddings from Gemini API: {str(e)}")

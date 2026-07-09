@@ -1,19 +1,29 @@
-import os
-import psycopg
-from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+from app.core.config import settings
 
-# Load variables from the .env file
-load_dotenv()
+# We use SQLAlchemy for our ORM. 
+# Notice we rely on the DATABASE_URL from our config.py
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True, # Verifies connection is alive before using it
+    pool_size=5,        # Keeps connection pool small for local dev
+    max_overflow=10
+)
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+# SessionLocal will be used to spawn individual database sessions per API request
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-def get_db_connection():
+# All our future database models will inherit from this Base
+Base = declarative_base()
+
+# Dependency function to use in FastAPI routes
+def get_db():
     """
-    Creates and returns a raw connection to the PostgreSQL database.
+    Yields a database session and safely closes it after the request completes.
     """
+    db = SessionLocal()
     try:
-        conn = psycopg.connect(DATABASE_URL)
-        return conn
-    except Exception as e:
-        print(f"❌ Database Connection Error: {e}")
-        raise e
+        yield db
+    finally:
+        db.close()

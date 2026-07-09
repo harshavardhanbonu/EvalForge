@@ -1,92 +1,72 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from pydantic import BaseModel
-from app.core.db import get_db_connection
-from app.services.ingestion import process_pdf_document
-from app.services.generation import generate_student_answer 
-from app.services.evaluation import evaluate_answer
-from app.services.history import save_evaluation_history
-app = FastAPI(title="EvalForge API", version="1.0.0")
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+import os
 
-# 1. Pydantic Models must be defined at the top
-class QuestionRequest(BaseModel):
-    project_id: int
-    question: str
+from app.core.db import engine, Base, get_db
+
+# Import your routers
+from app.api import routes_ingest
+from app.api import routes_query
+
+# Initialize FastAPI
+app = FastAPI(
+    title="EvalForge API", 
+    description="Adaptive RAG Evaluation Platform",
+    version="1.0.0"
+)
+
+# CORS Middleware (Allows your frontend to talk to the backend)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register all API Routes
+app.include_router(routes_ingest.router, prefix="/api/v1/documents", tags=["Ingestion"])
+app.include_router(routes_query.router, prefix="/api/v1/query", tags=["Query"])
+
+@app.on_event("startup")
+def on_startup():
+    """
+    Runs when the server starts. 
+    Ensures the pgvector extension is installed in Postgres, then creates tables.
+    """
+    with engine.connect() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+        conn.commit()
+    
+    # Reset tables on startup (Useful for local development)
+    Base.metadata.drop_all(bind=engine)
+    
+    # Create all tables defined in db_models.py
+    Base.metadata.create_all(bind=engine)
 
 
-# 2. Health Check Endpoint
 @app.get("/")
-def health_check():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT 1;")
-        cur.close()
-        conn.close()
-        db_status = "Connected"
-    except Exception:
-        db_status = "Disconnected/Error"
-
-    return {"status": "healthy", "database": db_status}
+def serve_ui():
+    """Serves the beautiful HTML UI when you visit the root URL."""
+    # Find the path to the frontend/index.html file
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    html_path = os.path.join(base_dir, "frontend", "index.html")
+    
+    if os.path.exists(html_path):
+        return FileResponse(html_path)
+    return {"error": "UI file not found. Please ensure frontend/index.html exists."}
 
 
-# 3. Document Ingestion Endpoint
-@app.post("/upload")
-async def upload_document(
-    project_name: str = Form(...),
-    file: UploadFile = File(...)
-):
-    if not file.filename.endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
-    try:
-        file_bytes = await file.read()
-        result = process_pdf_document(
-            project_name=project_name,
-            filename=file.filename,
-            file_bytes=file_bytes
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/ask")
-def ask_question(request: QuestionRequest):
+@app.get("/health")
+def health_check(db: Session = Depends(get_db)):
     """
-    1. Generates an answer using the Student (Gemini 2.5 Flash).
-    2. Evaluates the answer using the Judge (Gemini 2.5 Flash).
-    3. Permanently logs the complete transaction into PostgreSQL history.
+    Simple health check to verify API and Database connectivity.
     """
     try:
-        # Step 1: The Student generates the response text
-        student_result = generate_student_answer(
-            question=request.question,
-            project_id=request.project_id
-        )
-        
-        # Step 2: The Judge scores the response
-        evaluation_result = evaluate_answer(
-            question=student_result["question"],
-            context_chunks=student_result["context_used"],
-            student_answer=student_result["answer"]
-        )
-        
-        # Step 3: Log everything to your database tables
-        save_evaluation_history(
-            project_id=request.project_id,
-            question=request.question,
-            answer_text=student_result["answer"],
-            model_name="gemini-2.5-flash",
-            eval_data=evaluation_result
-        )
-        
-        # Step 4: Return unified payload back to UI
-        return {
-            "project_id": request.project_id,
-            "question": student_result["question"],
-            "student_answer": student_result["answer"],
-            "evaluation": evaluation_result,
-            "saved_to_history": True
-        }
-        
+        db.execute(text("SELECT 1;"))
+        return {"status": "healthy", "database": "connected"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}")
