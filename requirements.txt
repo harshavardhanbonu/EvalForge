@@ -1,9 +1,11 @@
 fastapi
 uvicorn
+python-multipart
 sqlalchemy
-psycopg[binary]
 psycopg2-binary
-google-genai
+psycopg[binary]
+pgvector
 pydantic
 pydantic-settings
-python-multipart
+google-genai
+PyMuPDF
